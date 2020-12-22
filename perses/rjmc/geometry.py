@@ -8,7 +8,7 @@ import numpy as np
 import networkx as nx
 
 from perses.storage import NetCDFStorageView
-from openeye import oechem, oeomega
+
 
 ################################################################################
 # Initialize logging

@@ -7,6 +7,108 @@ Utility functions for handing small molecules
 __author__ = 'John D. Chodera'
 
 import numpy as np
+from openforcefield.topology import Molecule
+from openforcefield.utils import get_data_file_path
+
+
+def sdf_to_mols(sdf_filename, allow_undefined_stereo=False):
+    # TODO: should this add hydrogens or generate conformers?
+    mols_from_file = Molecule.from_file(
+        sdf_filename,
+        allow_undefined_stereo=allow_undefined_stereo)
+    if isinstance(mols_from_file, Molecule):
+        mols_from_file = [mols_from_file]
+    return mols_from_file
+
+
+def createMolFromSDF(sdf_filename, index=0, add_hydrogens=True, allow_undefined_stereo=False):
+    """
+    # Load an SDF file into an Mol. Since SDF files can contain multiple
+    molecules, an index can be provided as well.
+
+    Parameters
+    ----------
+    sdf_filename : str
+        The name of the SDF file
+    index : int, default 0
+        The index of the molecule in the SDF file
+    allow_undefined_stereo : bool, default=False
+        wether to skip stereo perception
+
+    Returns
+    -------
+    mol : openforcefield.topology.Molecule object
+        The loaded mol object
+    """
+
+    mols_from_file =sdf_to_mols(
+        sdf_filename,
+        allow_undefined_stereo=allow_undefined_stereo)
+    molecule = mols_from_file[index]
+    assign_names_if_needed(molecule)
+    molecule.generate_conformers()  # TODO: keep this?
+
+    return molecule
+
+def smiles_to_mol(smiles, title='MOL', max_confs=1):
+    """
+    Generate a mol from a SMILES string
+
+    Parameters
+    ----------
+    smiles : str
+        SMILES string of molecule
+    title : str, default 'MOL'
+        title of Mol molecule
+    max_confs : int, default 1
+        maximum number of conformers to generate
+    Returns
+    -------
+    molecule : openforcefield.topology.Molecule
+        Mol object of the molecule
+    """
+
+    # Create molecule
+    molecule = Molecule.from_smiles(smiles, allow_undefined_stereo=False)
+    assign_names_if_needed(molecule)
+
+    molecule.name = title
+
+    # Assign geometry
+    molecule.generate_conformers(n_conformers=max_confs)
+
+    return molecule
+
+
+def assign_names_if_needed(molecule):
+    if not molecule.has_unique_atom_names:
+        molecule.generate_unique_atom_names()
+
+
+def describe_mol(mol):
+    """
+    Render the contents of an Mol to a string.
+
+    Parameters
+    ----------
+    mol : Mol
+        Molecule to describe
+
+    Returns
+    -------
+    description : str
+        The description
+    """
+    #TODO this needs a test
+    description = ""
+    description += "ATOMS:\n"
+    for atom in mol.atoms:
+        description += "%8d %5s %5d\n" % (atom.GetIdx(), atom.GetName(), atom.GetAtomicNum())
+    description += "BONDS:\n"
+    for bond in mol.bonds:
+        description += "%8d %8d\n" % (bond.GetBgnIdx(), bond.GetEndIdx())
+    return description
+
 
 def sanitizeSMILES(smiles_list, mode='drop', verbose=False):
     """
@@ -48,11 +150,8 @@ def sanitizeSMILES(smiles_list, mode='drop', verbose=False):
     >>> len(sanitized_smiles_list)
     4
     """
-    from openeye import oechem
-    from openeye.oechem import OEGraphMol, OESmilesToMol, OECreateIsoSmiString
-    from perses.tests.utils import has_undefined_stereocenters, enumerate_undefined_stereocenters
     sanitized_smiles_set = set()
-    OESMILES_OPTIONS = oechem.OESMILESFlag_DEFAULT | oechem.OESMILESFlag_ISOMERIC | oechem.OESMILESFlag_Hydrogens  ## IVY
+    #OESMILES_OPTIONS = oechem.OESMILESFlag_DEFAULT | oechem.OESMILESFlag_ISOMERIC | oechem.OESMILESFlag_Hydrogens  ## IVY
     for smiles in smiles_list:
         molecule = OEGraphMol()
         OESmilesToMol(molecule, smiles)
@@ -88,10 +187,11 @@ def sanitizeSMILES(smiles_list, mode='drop', verbose=False):
 
     return sanitized_smiles_list
 
+
 def canonicalize_SMILES(smiles_list):
     """Ensure all SMILES strings end up in canonical form.
     Stereochemistry must already have been expanded.
-    SMILES strings are converted to a OpenEye Topology and back again.
+    SMILES strings are converted to an OpenFF molecule and back again.
     Parameters
     ----------
     smiles_list : list of str
@@ -102,19 +202,39 @@ def canonicalize_SMILES(smiles_list):
         List of SMILES strings, after canonicalization.
     """
 
-    # Round-trip each molecule to a Topology to end up in canonical form
-    from openmoltools.forcefield_generators import generateOEMolFromTopologyResidue, generateTopologyFromOEMol
-    from perses.utils.openeye import smiles_to_oemol
-    from openeye import oechem
-    canonical_smiles_list = list()
-    for smiles in smiles_list:
-        molecule = smiles_to_oemol(smiles)
-        topology = generateTopologyFromOEMol(molecule)
-        residues = [ residue for residue in topology.residues() ]
-        new_molecule = generateOEMolFromTopologyResidue(residues[0])
-        new_smiles = oechem.OECreateIsoSmiString(new_molecule)
-        canonical_smiles_list.append(new_smiles)
-    return canonical_smiles_list
+    # Round-trip each molecule through a Molecule to end up in canonical form
+    return [Molecule.from_smiles(smiles).to_smiles() for smiles in smiles_list]
+
+
+def subset_molecule(molecule, included_atom_indexes):
+    # TODO: should this capability go into openff, which would then be able to
+    # call openeye's logic instead of this logic?
+    # TODO: use RDKit's Murcko scaffold instead?
+    # https://www.rdkit.org/docs/GettingStartedInPython.html#murcko-decomposition
+    pred = set(included_atom_indexes)
+    dst = Molecule()
+    new_atoms = {}
+    for atom in molecule.atoms:
+        picked = atom.molecule_atom_index in pred
+        if picked:
+            new_atom = dst.add_atom(
+                atom.atomic_number,
+                atom.formal_charge,
+                atom.is_aromatic, # TODO: can this change?
+                name=atom.name)
+            new_atoms[atom.molecule_atom_index] = new_atom
+
+    for bond in molecule.bonds:
+        idx1 = bond.atom1.molecule_atom_index
+        idx2 = bond.atom2.molecule_atom_index
+        if {idx1, idx2} < pred:
+            dst.add_bond(
+                new_atoms[idx1], new_atoms[idx2],
+                bond.bond_order,
+                bond.is_aromatic, # TODO: can this change?
+                fractional_bond_order=bond.fractional_bond_order)
+            # TODO: verify fractional_bond_order doesn't change
+    return dst
 
 def show_topology(topology):
     """
@@ -135,26 +255,9 @@ def show_topology(topology):
         output += '\n'
     print(output)
 
-def render_single_molecule(filename, molecule, width=1200, height=600):
-    """
-    simple function to create an oemol image
 
-    Parameters
-    ----------
-    filename : str
-        The PDF filename to write to.
-    molecule : openeye.oechem.OEMol
-        molecule
-    width : int, optional, default=1200
-        Width in pixels
-    height : int, optional, default=1200
-        Height in pixels
-    """
-    from openeye import oechem, oedepict
-    oedepict.OEPrepareDepiction(molecule)
-    oedepict.OERenderMolecule(filename, molecule)
-
-def render_atom_mapping(filename, molecule1, molecule2, new_to_old_atom_map, width=1200, height=600):
+def render_atom_mapping(filename, molecule1, molecule2,
+                        new_to_old_atom_map, width=1200, height=600):
     """
     Render the atom mapping to a PDF file.
 
@@ -162,9 +265,9 @@ def render_atom_mapping(filename, molecule1, molecule2, new_to_old_atom_map, wid
     ----------
     filename : str
         The PDF filename to write to.
-    molecule1 : openeye.oechem.OEMol
+    molecule1 : Molecule
         Initial molecule
-    molecule2 : openeye.oechem.OEMol
+    molecule2 : Molecule
         Final molecule
     new_to_old_atom_map : dict of int
         new_to_old_atom_map[molecule2_atom_index] is the corresponding molecule1 atom index
@@ -174,22 +277,25 @@ def render_atom_mapping(filename, molecule1, molecule2, new_to_old_atom_map, wid
         Height in pixels
 
     """
-    from openeye import oechem, oedepict
 
-    # Make copies of the input molecules
+    # Make copies of the input molecules so we can save the 2D coordinates
     # making a copy resets the atom indices, so the new_to_old_atom_map has to be remapped with the new, zero-indexed indices
-    molecule1_indices = [atom.GetIdx() for atom in molecule1.GetAtoms()]
-    molecule2_indices = [atom.GetIdx() for atom in molecule2.GetAtoms()]
+    def indices(mol):
+        return [atom.molecule_atom_index for atom in mol.atoms]
+    # TODO: is openff's remap relevant here?
+    molecule1_indices = indices(molecule1)
+    molecule2_indices = indices(molecule2)
+    molecule1 = Molecule(molecule1)
+    molecule2 = Molecule(molecule2)
+    molecule1_indices_new = indices(molecule1)
+    molecule2_indices_new = indices(molecule2)
 
-    molecule1, molecule2 = oechem.OEGraphMol(molecule1), oechem.OEGraphMol(molecule2)
-
-    molecule1_indices_new = [atom.GetIdx() for atom in molecule1.GetAtoms()]
-    molecule2_indices_new = [atom.GetIdx() for atom in molecule2.GetAtoms()]
-
-    modified_map_1 = {old: new for new, old in zip(molecule1_indices_new, molecule1_indices)}
-    modified_map_2 = {old: new for new, old in zip(molecule2_indices_new, molecule2_indices)}
-    new_to_old_atom_map = {modified_map_2[key]: modified_map_1[val] for key, val in new_to_old_atom_map.items()}
-
+    modified_map_1 = {old: new for new, old
+                      in zip(molecule1_indices_new, molecule1_indices)}
+    modified_map_2 = {old: new for new, old
+                      in zip(molecule2_indices_new, molecule2_indices)}
+    new_to_old_atom_map = {modified_map_2[key]: modified_map_1[val]
+                           for key, val in new_to_old_atom_map.items()}
 
     oechem.OEGenerate2DCoordinates(molecule1)
     oechem.OEGenerate2DCoordinates(molecule2)
@@ -284,7 +390,7 @@ def render_protein_residue_atom_mapping(topology_proposal, filename, width = 120
         width : int
             width of image
         height : int
-            height of image 
+            height of image
     """
     from perses.utils.smallmolecules import render_atom_mapping
     oe_res_maps = {}
