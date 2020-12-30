@@ -7,7 +7,7 @@ import numpy as np
 from scipy.spatial.distance import cdist
 
 from perses.utils.openff import get_scaffold
-from perses.utils.rdkit import mcs
+from perses.utils import rdutils
 from perses.utils.smallmolecules import render_atom_mapping
 
 
@@ -30,6 +30,7 @@ MATCHING_CRITERIA = [MATCHING_INDEX, MATCHING_NAME]
 
 # Mapping expressions
 # rdkit / openeye have own definitions for these
+MATCH_NUMS = 'match_nums'
 MATCH_RING = 'match_ring'
 MATCH_AROMATICITY = 'match_aromaticity'
 MATCH_HYBRIDIZATION = 'match_hybridization'
@@ -93,9 +94,9 @@ def _score_maps(mol_A, mol_B, maps):
     all_scores = []
     for this_map in maps:
         map_score = 0
-        for atom in this_map:
-            if not mol_B_H[atom]:  # skip H's - only look at heavy atoms
-                map_score += all_to_all[this_map[atom], atom]
+        for atom_idx in this_map:
+            if not mol_B_H[atom_idx]:  # skip H's - only look at heavy atoms
+                map_score += all_to_all[this_map[atom_idx], atom_idx]
         all_scores.append(map_score)
     return all_scores
 
@@ -131,7 +132,6 @@ def _scaffold_maps(molA, molB, matching_criterion):
     for atom in scaffoldB.atoms:
         atom.SetIntType(_assign_atom_ring_id(atom))
     """
-
     scaffold_maps = _get_all_maps(
         scaffoldA, scaffoldB,
         atom_expr=MATCH_AROMATICITY,
@@ -165,7 +165,7 @@ def _no_common_scaffold_maps(
         external_inttypes=external_inttypes,
         atom_expr=atom_expr,
         bond_expr=bond_expr,
-        matching_criterion=matching_criterion)
+        matching_criterion=matching_criterion, want3d=True)
     _logger.info(f'len {all_molecule_maps}')
     for x in all_molecule_maps:
         _logger.info(x)
@@ -176,8 +176,8 @@ def _map_with_scaffold(mol, scaffold, matching_criterion):
          mol, scaffold,
          atom_expr=MATCH_HYBRID_AND_ATOM_TYPE,
          bond_expr=DEFAULT_BOND_EXPRESSION,
-         matching_criterion=matching_criterion)
-     _logger.info(f'{len(scaffold_mol_maps)} scaffold maps')
+         matching_criterion=matching_criterion, want3d=False)
+     _logger.info('%s scaffold maps', len(scaffold_mol_maps))
      scaffold_mol_map = scaffold_mol_maps[0]
      _logger.info(f'Scaffold to mol: {scaffold_mol_map}')
      assert len(scaffold_mol_map) == scaffold.n_atoms, f'Scaffold should be fully contained within the molecule it came from. {len(scaffold_mol_map)} in map, and {scaffold.n_atoms} in scaffold'
@@ -185,7 +185,7 @@ def _map_with_scaffold(mol, scaffold, matching_criterion):
 
 
 def _reset_typing(molA, molB, scaffold_map):
-    _logger.warn("Ignoring _reset_typing")
+    _logger.warning("Ignoring _reset_typing")
     return
     # reset the IntTypes
     for atom in molA.GetAtoms():
@@ -193,15 +193,16 @@ def _reset_typing(molA, molB, scaffold_map):
     for atom in molB.GetAtoms():
         atom.SetIntType(0)
 
-    index = 1
-    for scaff_b_id, scaff_a_id in scaffold_map.items():
+
+    for index, (scaff_b_id, scaff_a_id) in enumerate(scaffold_map.items()):
+        # index was 1-based, now 0-based
         for atom in molA.GetAtoms():
             if atom.GetIdx() == scaffold_A_map[scaff_a_id]:
                 atom.SetIntType(index)
         for atom in molB.GetAtoms():
             if atom.GetIdx() == scaffold_B_map[scaff_b_id]:
                 atom.SetIntType(index)
-        index += 1
+
     for atom in molA.GetAtoms():
         if atom.GetIntType() == 0:
             atom.SetIntType(_assign_atom_ring_id(atom))
@@ -232,7 +233,7 @@ def _maps_with_common_scaffold(
             external_inttypes=True,
             atom_expr=atom_expr,
             bond_expr=bond_expr,
-            matching_criterion=matching_criterion)
+            matching_criterion=matching_criterion, want3d=True)
         all_molecule_maps.extend(molecule_maps)
     return all_molecule_maps
 
@@ -309,7 +310,8 @@ def _get_mol_atom_map(molA,
         molA = _assign_ring_ids(molA)
         molB = _assign_ring_ids(molB)
 
-    scaffold_maps, scaffoldA, scaffoldB = _scaffold_maps(molA, molB, matching_criterion)
+    scaffold_maps, scaffoldA, scaffoldB = _scaffold_maps(
+        molA, molB, matching_criterion)
 
     if len(scaffold_maps) == 0:
         all_molecule_maps = _no_common_scaffold_maps(
@@ -349,6 +351,7 @@ def _get_mol_atom_map(molA,
         _logger.info('Only one map so returning that one')
         return all_molecule_maps[0] #  can this be done in a less ugly way??
     if map_strategy == 'geometry':
+        import pdb;pdb.set_trace()
         molecule_maps_scores = _remove_redundant_maps(
             molA, molB, all_molecule_maps)
         _logger.info(f'molecule_maps_scores: {molecule_maps_scores.keys()}')
@@ -423,7 +426,8 @@ def _get_all_maps(current_mol,
                   allow_ring_breaking=True,
                   external_inttypes=False,
                   unique=True,
-                  matching_criterion='index'):
+                  matching_criterion='index',
+                  want3d=False):
     """Generate all  possible maps between two mols
 
     Parameters
@@ -457,13 +461,16 @@ def _get_all_maps(current_mol,
 
     if atom_expr is None:
         _logger.debug(f'No atom expression defined, using map strength : {map_strength}')
-        atom_expr = MAP_STRENGTH_DICT[map_strength][0]
+        atom_expr = MAP_STRENGTH_DICT[map_strength].atom
     if bond_expr is None:
         _logger.debug(f'No bond expression defined, using map strength : {map_strength}')
-        bond_expr = MAP_STRENGTH_DICT[map_strength][1]
+        bond_expr = MAP_STRENGTH_DICT[map_strength].bond
 
     mapping_expr = MappingExpression(atom_expr, bond_expr)
-    all_mappings = mcs(current_mol, proposed_mol, mapping_expr)
+    if want3d:
+        all_mappings = rdutils.mcs3d(current_mol, proposed_mol) #, mapping_expr)
+    else:
+        all_mappings = rdutils.mcs(current_mol, proposed_mol, mapping_expr)
     return all_mappings
 
 
@@ -643,14 +650,14 @@ def hydrogen_mapping_exceptions(old_mol,
 
     return new_to_old_atom_map
 
-@staticmethod
+
 def _assign_atom_ring_id(atom, max_ring_size=10):
     """ Returns the int type based on the ring occupancy
     of the atom
 
     Parameters
     ----------
-    atom : oechem.OEAtomBase
+    atom : openforcefield.topology.Atom
         atom to compute integer of
     max_ring_size : int, default = 10
         Largest ring size that will be checked for
@@ -665,6 +672,7 @@ def _assign_atom_ring_id(atom, max_ring_size=10):
         rings += str(int(oechem.OEAtomIsInRingSize(atom, i)))
     ring_as_base_two = int(rings, 2)
     return ring_as_base_two
+
 
 @staticmethod
 def _assign_bond_ring_id(bond, max_ring_size=10):
@@ -704,8 +712,11 @@ def _assign_ring_ids(molecule, max_ring_size=10):
     Returns
     -------
     """
+    atom_ring_fingerprints, bond_ring_fingerprints = rdutils.ring_fingerprints(
+        molecule)
     return molecule
     # TODO: how to assign atom and bond types in openforcefield?
+    # these are used in mapping only
     for atom in molecule.atoms:
         atom.SetIntType(
             _assign_atom_ring_id(atom, max_ring_size=max_ring_size))
@@ -717,15 +728,15 @@ def _assign_ring_ids(molecule, max_ring_size=10):
 
 def _assign_distance_ids(old_mol, new_mol, distance=0.3):
     """ Gives atoms in both molecules matching Int numbers if they are close
-    to each other. This should ONLY be  used if the geometry (i.e. binding mode)
+    to each other. This should ONLY be used if the geometry (i.e. binding mode)
     of both molecules are known, and they are aligned to the same frame of reference.
 
     this function is invariant to which is passed in as {old|new}_mol
     Parameters
     ----------
-    old_mol : oechem.OEMol
+    old_mol : Molecule
         first molecule to compare
-    new_mol : oechem.OEMol
+    new_mol : Molecule
         second molecule to compare
     distance : float, default = 0.3
         Distance (in angstrom) that two atoms need to be closer than to be
@@ -735,11 +746,13 @@ def _assign_distance_ids(old_mol, new_mol, distance=0.3):
     -------
     copies of old_mol and new_mol, with IntType set according to inter-molecular distances
     """
-    _logger.info(f'Using a distance of {distance} to force the mapping of close atoms')
-    from scipy.spatial.distance import cdist
+    _logger.info('Using a distance of %s to force the mapping of close atoms',
+                 distance)
+
     unique_integer = 1
-    for atomA, coordsA in zip(old_mol.GetAtoms(), old_mol.GetCoords().values()):
-        for atomB, coordsB in zip(new_mol.GetAtoms(), new_mol.GetCoords().values()):
+    # TODO: conversion not yet complete
+    for atomA, coordsA in zip(old_mol.atoms, old_mol.GetCoords().values()):
+        for atomB, coordsB in zip(new_mol.atoms, new_mol.GetCoords().values()):
             distances_ij = cdist([coordsA], [coordsB], 'euclidean')[0]
             if distances_ij < distance:
                 atomA.SetIntType(unique_integer)
@@ -945,3 +958,33 @@ class AtomMapper:
     def save_atom_mapping(self, filename='atom_map.png'):
         render_atom_mapping(
             filename, self.current_mol, self.proposed_mol, self.atom_map)
+
+
+class Mapping:
+    def __init__(self, current_mol, proposed_mol, atom_map):
+        self.current_mol = current_mol
+        self.proposed_mol = proposed_mol
+        self.atom_map = atom_map
+
+    def visualize(self, backend):
+        if backend != 'rdkit':
+            raise ValueError
+        return rdutils.visualize_mapping(self)
+
+    def _ipython_display_(self):
+        from IPython.display import display
+
+        try:
+            return display(self.visualize(backend="nglview"))
+        except (ImportError, ValueError):
+            pass
+
+        try:
+            return display(self.visualize(backend="rdkit"))
+        except ValueError:
+            pass
+
+        try:
+            return display(self.visualize(backend="openeye"))
+        except ValueError:
+            pass

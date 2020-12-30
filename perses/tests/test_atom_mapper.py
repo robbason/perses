@@ -2,7 +2,6 @@ from collections import defaultdict
 from io import StringIO
 import os
 #from itertools import combinations
-from pkg_resources import resource_filename
 from urllib.request import urlopen
 
 import numpy as np
@@ -17,6 +16,8 @@ from perses.utils.smallmolecules import render_atom_mapping, smiles_to_mol, sdf_
 from perses.rjmc.topology_proposal import SmallMoleculeSetProposalEngine
 from perses.rjmc import atom_mapper
 
+from .sample_data import load_JACS
+
 
 def test_ring_breaking_detection():
     """
@@ -27,7 +28,8 @@ def test_ring_breaking_detection():
     molecule2 = smiles_to_mol("c1ccccc1", "benzene", 1)
 
     # Allow ring breaking
-    new_to_old_atom_map = atom_mapper._get_mol_atom_map(molecule1, molecule2, allow_ring_breaking=True)
+    new_to_old_atom_map = atom_mapper._get_mol_atom_map(
+        molecule1, molecule2, allow_ring_breaking=True)
     if not len(new_to_old_atom_map) > 0:
         filename = 'mapping-error.png'
         #render_atom_mapping(filename, molecule1, molecule2, new_to_old_atom_map)
@@ -36,7 +38,8 @@ def test_ring_breaking_detection():
         msg += str(new_to_old_atom_map)
         raise Exception(msg)
 
-    new_to_old_atom_map = atom_mapper._get_mol_atom_map(molecule1, molecule2, allow_ring_breaking=False)
+    new_to_old_atom_map = atom_mapper._get_mol_atom_map(
+        molecule1, molecule2, allow_ring_breaking=False)
     if new_to_old_atom_map is not None: # atom mapper should not retain _any_ atoms in default mode
         filename = 'mapping-error.png'
         #render_atom_mapping(filename, molecule1, molecule2, new_to_old_atom_map)
@@ -44,12 +47,6 @@ def test_ring_breaking_detection():
         msg += 'Wrote atom mapping to %s for inspection; please check this.' % filename
         msg += str(new_to_old_atom_map)
         raise Exception(msg)
-
-
-def _load_JACS(dataset_name):
-    dataset_path = f'data/schrodinger-jacs-datasets/{dataset_name}_ligands.sdf'
-    sdf_filename = resource_filename('perses', dataset_path)
-    return sdf_to_mols(sdf_filename)
 
 
 def test_molecular_atom_mapping():
@@ -61,7 +58,7 @@ def test_molecular_atom_mapping():
     # Test mappings for JACS dataset ligands
     for dataset_name in ['CDK2']: #, 'p38', 'Tyk2', 'Thrombin', 'PTP1B', 'MCL1', 'Jnk1', 'Bace']:
         # Read molecules
-        molecules = _load_JACS(dataset_name)
+        molecules = load_JACS(dataset_name).values()
 
         # Build atom map for some transformations.
         #for (molecule1, molecule2) in combinations(molecules, 2): # too slow
@@ -86,26 +83,38 @@ def test_molecular_atom_mapping():
             # TODO: this is not a real test
 
 
-def test_map_strategy():
+def test_map_strategy(caplog):
     """
     Test the creation of atom maps between pairs of molecules from the JACS benchmark set.
 
     """
+    import logging
+    caplog.set_level(logging.DEBUG)
     # Test mappings for JACS dataset ligands
     for dataset_name in ['Jnk1']:
-        molecules = _load_JACS(dataset_name)
+        molecules = load_JACS(dataset_name)
         atom_expr = None # oechem.OEExprOpts_IntType
         bond_expr = None # oechem.OEExprOpts_RingMember
-
-        # the 0th and 1st Jnk1 ligand have meta substituents that face opposite eachother
+        molA = molecules['18629-1']
+        molB = molecules['18634-1']
+        import pdb;pdb.set_trace()
+        # verify scaffold maps
+        matching_criterion = 'index'
+        scaffold_maps, scaffoldA, scaffoldB = atom_mapper._scaffold_maps(molA, molB, matching_criterion)
+        # fg=lambda x: [(k,y) for k,y in x.items() if k != y]
+        # dl=lambda x,y: [set(x.items()) - set(y.items()), set(y.items()) - set(x.items())]
+        # the 0th and 1st Jnk1 ligand have meta substituents that face opposite each other
         # in the active site. Using `map_strategy=matching_criterion` should align these groups, and put them
         # both in the core. Using `map_strategy=geometry` should see that the orientations differ and chose
         # to unmap (i.e. put both these groups in core) such as to get the geometry right at the expense of
         # mapping fewer atoms
-        new_to_old_atom_map = atom_mapper._get_mol_atom_map(molecules[0], molecules[1],atom_expr=atom_expr,bond_expr=bond_expr)
+        new_to_old_atom_map = atom_mapper._get_mol_atom_map(
+            molA, molB, atom_expr=atom_expr, bond_expr=bond_expr)
         assert len(new_to_old_atom_map) == 37, 'Expected meta groups methyl C to map onto ethyl O'
 
-        new_to_old_atom_map = atom_mapper._get_mol_atom_map(molecules[0], molecules[1],atom_expr=atom_expr,bond_expr=bond_expr,map_strategy='geometry')
+        new_to_old_atom_map = atom_mapper._get_mol_atom_map(
+            molA, molB,
+            atom_expr=atom_expr, bond_expr=bond_expr, map_strategy='geometry')
         assert len(new_to_old_atom_map) == 35,  'Expected meta groups methyl C to NOT map onto ethyl O as they are distal in cartesian space'
 
 # TODO: move to pytest so these can be parameterized

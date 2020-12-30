@@ -41,7 +41,7 @@ def createMolFromSDF(sdf_filename, index=0, add_hydrogens=True, allow_undefined_
         The loaded mol object
     """
 
-    mols_from_file =sdf_to_mols(
+    mols_from_file = sdf_to_mols(
         sdf_filename,
         allow_undefined_stereo=allow_undefined_stereo)
     molecule = mols_from_file[index]
